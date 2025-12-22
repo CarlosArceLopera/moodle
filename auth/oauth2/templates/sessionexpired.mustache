@@ -1,0 +1,90 @@
+{{!
+    This file is part of Moodle - http://moodle.org/
+
+    Moodle is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Moodle is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
+}}
+{{!
+    @template auth_oauth2/sessionexpired
+
+    Render the OAuth2 session expired recovery UI on the login page.
+
+    This template is displayed when an OAuth2 login attempt fails due to
+    an expired or invalid sesskey. It allows the user to restart the
+    authentication flow with the same identity provider, or fall back
+    to the standard login page if the issuer is unavailable.
+
+    Classes required for JS:
+    * none
+
+    Data attributes required for JS:
+    * none
+
+    Context variables required for this template:
+    * notification - HTML notification message shown at the top (optional)
+    * hasidps - boolean indicating whether a login provider is available
+    * idps - array of OAuth2 identity providers (when hasidps is true)
+      * name - display name of the identity provider
+      * url - login URL for the provider
+      * iconurl - URL to the provider icon (optional)
+    * fallbackmessage - message shown when no provider is available
+    * loginurl - URL to the standard login page
+
+    Example context (json):
+    {
+        "notification": "<div class=\"alert alert-info\">Session expired</div>",
+        "hasidps": true,
+        "idps": [{
+            "name": "Google",
+            "url": "https:\/\/example.com\/auth\/oauth2\/login.php?id=1&sesskey=abc123",
+            "iconurl": "https:\/\/accounts.google.com\/favicon.ico"
+        }],
+        "fallbackmessage": "Your login session has expired.",
+        "loginurl": "https:\/\/example.com\/login\/index.php"
+    }
+}}
+
+{{#notification}}
+    {{{notification}}}
+{{/notification}}
+
+{{#hasidps}}
+<div class="login-identityproviders">
+    <h2 class="login-heading">
+        {{#str}}potentialidps, auth{{/str}}
+    </h2>
+
+    {{#idps}}
+        <a class="btn login-identityprovider-btn btn-block"
+           href="{{{url}}}">
+            {{#iconurl}}
+                <img src="{{{iconurl}}}"
+                     alt="{{name}}"
+                     width="24"
+                     height="24"
+                     class="me-1">
+            {{/iconurl}}
+            {{name}}
+        </a>
+    {{/idps}}
+</div>
+{{/hasidps}}
+
+{{^hasidps}}
+<div class="oauth2-login-retry text-center mt-4">
+    <p>{{fallbackmessage}}</p>
+    <a href="{{{loginurl}}}" class="btn btn-primary">
+        {{#str}}backtologin, auth_oauth2{{/str}}
+    </a>
+</div>
+{{/hasidps}}
