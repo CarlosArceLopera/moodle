@@ -25,6 +25,7 @@
 $string['accountexists'] = 'A user already exists on this site with this username. If this is your account, log in by entering your username and password and add it as a linked login via your preferences page.';
 $string['auth_oauth2description'] = 'OAuth 2 standards based authentication';
 $string['auth_oauth2settings'] = 'OAuth 2 authentication settings.';
+$string['backtologin'] = 'Back to login page';
 $string['confirmaccountemail'] = 'Hi {$a->firstname},
 
 A new account has been requested at \'{$a->sitename}\'
@@ -102,6 +103,9 @@ $string['noissuersavailable'] = 'None of the configured OAuth 2 services allow y
 $string['notloggedindebug'] = 'The login attempt failed. Reason: {$a}';
 $string['notwhileloggedinas'] = 'Linked logins cannot be managed while logged in as another user.';
 $string['oauth2:managelinkedlogins'] = 'Manage own linked login accounts';
+$string['oauth2sessionexpired'] = 'Login session expired';
+$string['oauth2sessionexpired_desc'] = 'Your login session has expired or was invalid. Please try logging in again.';
+$string['oauth2sessionexpired_noservice'] = 'The selected login service is no longer available. Please choose another login option below.';
 $string['notenabled'] = 'Sorry, OAuth 2 authentication plugin is not enabled';
 $string['plugindescription'] = 'This authentication plugin displays a list of the configured identity providers on the login page. Selecting an identity provider allows users to login with their credentials from an OAuth 2 provider.';
 $string['pluginname'] = 'OAuth 2';
