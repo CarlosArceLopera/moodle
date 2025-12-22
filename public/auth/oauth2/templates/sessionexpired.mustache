@@ -1,0 +1,38 @@
+{{!
+    This file is part of Moodle - http://moodle.org/
+
+    Moodle is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    Moodle is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
+}}
+{{!
+    @template auth_oauth2/sessionexpired
+
+    Render a minimal recovery UI when an OAuth2 login attempt cannot
+    proceed due to an expired or missing sesskey.
+
+    The template simply guides the user back to the standard login page
+    so they can restart the login flow cleanly.
+
+    Example context (json):
+    {
+        "fallbackmessage": "Your login session has expired.",
+        "loginurl": "https://example.com/login/index.php"
+    }
+}}
+
+<div class="text-center mt-4">
+    <p>{{fallbackmessage}}</p>
+    <a href="{{{loginurl}}}" class="btn btn-primary">
+        {{#str}}oauth2sessionexpired_backtologin, auth_oauth2{{/str}}
+    </a>
+</div>

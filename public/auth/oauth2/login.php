@@ -30,7 +30,30 @@ $wantsurl = optional_param('wantsurl', '', PARAM_LOCALURL);
 $PAGE->set_context(context_system::instance());
 $PAGE->set_url(new moodle_url('/auth/oauth2/login.php', ['id' => $issuerid]));
 
-require_sesskey();
+$code = optional_param('code', null, PARAM_RAW);
+if ($code === null) {
+    $incomingsesskey = optional_param('sesskey', '', PARAM_RAW);
+    if (empty($incomingsesskey) || !confirm_sesskey($incomingsesskey)) {
+        $PAGE->set_pagelayout('login');
+        $PAGE->navbar->ignore_active(true);
+        $PAGE->set_title(get_string('oauth2sessionexpired', 'auth_oauth2'));
+        $PAGE->set_heading(format_string($SITE->fullname));
+
+        echo $OUTPUT->header();
+        echo $OUTPUT->render_from_template(
+            'auth_oauth2/sessionexpired',
+            [
+                'fallbackmessage' => get_string(
+                    'oauth2sessionexpired_desc',
+                    'auth_oauth2'
+                ),
+                'loginurl' => (new moodle_url(get_login_url()))->out(false),
+            ]
+        );
+        echo $OUTPUT->footer();
+        exit;
+    }
+}
 
 if (!\auth_oauth2\api::is_enabled()) {
     throw new \moodle_exception('notenabled', 'auth_oauth2');
@@ -56,4 +79,3 @@ if ($client) {
 } else {
     throw new moodle_exception('Could not get an OAuth client.');
 }
-
