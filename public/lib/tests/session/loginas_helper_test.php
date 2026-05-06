@@ -18,6 +18,7 @@ namespace core\session;
 
 use core\context\course as context_course;
 use core\context\system as context_system;
+use core\context\coursecat as context_coursecat;
 
 /**
  * Unit tests for loginas_helper class.
@@ -314,5 +315,206 @@ final class loginas_helper_test extends \advanced_testcase {
             $canloginasdifferentgroup,
             (bool) loginas_helper::get_context_user_can_login_as($manager, $student2, $course)
         );
+    }
+
+    /**
+     * Tests that category-level loginas is scoped to the course category.
+     */
+    public function test_loginas_category_context(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+
+        $manager = $this->getDataGenerator()->create_user();
+        $teacher = $this->getDataGenerator()->create_user();
+        $managerroleid = $DB->get_field('role', 'id', ['shortname' => 'manager'], MUST_EXIST);
+
+        $category = $this->getDataGenerator()->create_category();
+        $course = $this->getDataGenerator()->create_course(['category' => $category->id]);
+        $coursecontext = context_course::instance($course->id);
+        $categorycontext = context_coursecat::instance($category->id);
+
+        role_assign($managerroleid, $manager->id, $categorycontext->id);
+        $this->getDataGenerator()->enrol_user($teacher->id, $course->id, 'editingteacher');
+
+        $result = loginas_helper::get_context_user_can_login_as($manager, $teacher, $course);
+        $this->assertEquals($categorycontext, $result);
+        $this->assertNotEquals($coursecontext, $result);
+    }
+
+    /**
+     * Tests that category-level loginas rejects targets not enrolled in the course.
+     */
+    public function test_loginas_category_context_rejects_not_enrolled_target(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+
+        $manager = $this->getDataGenerator()->create_user();
+        $teacher = $this->getDataGenerator()->create_user();
+        $managerroleid = $DB->get_field('role', 'id', ['shortname' => 'manager'], MUST_EXIST);
+
+        $category = $this->getDataGenerator()->create_category();
+        $course = $this->getDataGenerator()->create_course(['category' => $category->id]);
+        $categorycontext = context_coursecat::instance($category->id);
+
+        role_assign($managerroleid, $manager->id, $categorycontext->id);
+
+        $result = loginas_helper::get_context_user_can_login_as($manager, $teacher, $course);
+        $this->assertNull($result);
+    }
+
+    /**
+     * Tests that category-level loginas rejects targets with system-level loginas power.
+     */
+    public function test_loginas_category_context_rejects_system_loginas_target(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+
+        $manager = $this->getDataGenerator()->create_user();
+        $teacher = $this->getDataGenerator()->create_user();
+        $managerroleid = $DB->get_field('role', 'id', ['shortname' => 'manager'], MUST_EXIST);
+
+        $category = $this->getDataGenerator()->create_category();
+        $course = $this->getDataGenerator()->create_course(['category' => $category->id]);
+        $systemcontext = context_system::instance();
+        $categorycontext = context_coursecat::instance($category->id);
+
+        role_assign($managerroleid, $manager->id, $categorycontext->id);
+        role_assign($managerroleid, $teacher->id, $systemcontext->id);
+        $this->getDataGenerator()->enrol_user($teacher->id, $course->id, 'editingteacher');
+
+        $result = loginas_helper::get_context_user_can_login_as($manager, $teacher, $course);
+        $this->assertNull($result);
+    }
+
+    /**
+     * Tests that category-level loginas rejects users from different groups in separate groups mode.
+     */
+    public function test_loginas_category_context_rejects_different_group_in_separate_groups(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+
+        $manager = $this->getDataGenerator()->create_user();
+        $teacher = $this->getDataGenerator()->create_user();
+        $managerroleid = $DB->get_field('role', 'id', ['shortname' => 'manager'], MUST_EXIST);
+
+        $category = $this->getDataGenerator()->create_category();
+        $course = $this->getDataGenerator()->create_course([
+            'category' => $category->id,
+            'groupmode' => SEPARATEGROUPS,
+        ]);
+        $coursecontext = context_course::instance($course->id);
+        $categorycontext = context_coursecat::instance($category->id);
+
+        role_assign($managerroleid, $manager->id, $categorycontext->id);
+        assign_capability('moodle/site:accessallgroups', CAP_PREVENT, $managerroleid, $coursecontext, true);
+
+        $this->getDataGenerator()->enrol_user($manager->id, $course->id, 'manager');
+        $this->getDataGenerator()->enrol_user($teacher->id, $course->id, 'editingteacher');
+
+        $group1 = $this->getDataGenerator()->create_group(['courseid' => $course->id]);
+        $group2 = $this->getDataGenerator()->create_group(['courseid' => $course->id]);
+        $this->getDataGenerator()->create_group_member(['groupid' => $group1->id, 'userid' => $manager->id]);
+        $this->getDataGenerator()->create_group_member(['groupid' => $group2->id, 'userid' => $teacher->id]);
+
+        $result = loginas_helper::get_context_user_can_login_as($manager, $teacher, $course);
+        $this->assertNull($result);
+    }
+
+    /**
+     * Tests that category-level loginas allows users in the same group in separate groups mode.
+     */
+    public function test_loginas_category_context_allows_same_group_in_separate_groups(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+
+        $manager = $this->getDataGenerator()->create_user();
+        $teacher = $this->getDataGenerator()->create_user();
+        $managerroleid = $DB->get_field('role', 'id', ['shortname' => 'manager'], MUST_EXIST);
+
+        $category = $this->getDataGenerator()->create_category();
+        $course = $this->getDataGenerator()->create_course([
+        'category' => $category->id,
+        'groupmode' => SEPARATEGROUPS,
+        ]);
+        $coursecontext = context_course::instance($course->id);
+        $categorycontext = context_coursecat::instance($category->id);
+
+        role_assign($managerroleid, $manager->id, $categorycontext->id);
+        assign_capability('moodle/site:accessallgroups', CAP_PREVENT, $managerroleid, $coursecontext, true);
+
+        $this->getDataGenerator()->enrol_user($manager->id, $course->id, 'manager');
+        $this->getDataGenerator()->enrol_user($teacher->id, $course->id, 'editingteacher');
+
+        $group = $this->getDataGenerator()->create_group(['courseid' => $course->id]);
+        $this->getDataGenerator()->create_group_member(['groupid' => $group->id, 'userid' => $manager->id]);
+        $this->getDataGenerator()->create_group_member(['groupid' => $group->id, 'userid' => $teacher->id]);
+
+        $result = loginas_helper::get_context_user_can_login_as($manager, $teacher, $course);
+        $this->assertEquals($categorycontext, $result);
+    }
+
+    /**
+     * Tests that category-level loginas allows different groups when accessallgroups is granted.
+     */
+    public function test_loginas_category_context_allows_different_group_with_accessallgroups(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+
+        $manager = $this->getDataGenerator()->create_user();
+        $teacher = $this->getDataGenerator()->create_user();
+        $managerroleid = $DB->get_field('role', 'id', ['shortname' => 'manager'], MUST_EXIST);
+
+        $category = $this->getDataGenerator()->create_category();
+        $course = $this->getDataGenerator()->create_course([
+        'category' => $category->id,
+        'groupmode' => SEPARATEGROUPS,
+        ]);
+        $coursecontext = context_course::instance($course->id);
+        $categorycontext = context_coursecat::instance($category->id);
+
+        role_assign($managerroleid, $manager->id, $categorycontext->id);
+        assign_capability('moodle/site:accessallgroups', CAP_ALLOW, $managerroleid, $coursecontext, true);
+
+        $this->getDataGenerator()->enrol_user($manager->id, $course->id, 'manager');
+        $this->getDataGenerator()->enrol_user($teacher->id, $course->id, 'editingteacher');
+
+        $group1 = $this->getDataGenerator()->create_group(['courseid' => $course->id]);
+        $group2 = $this->getDataGenerator()->create_group(['courseid' => $course->id]);
+        $this->getDataGenerator()->create_group_member(['groupid' => $group1->id, 'userid' => $manager->id]);
+        $this->getDataGenerator()->create_group_member(['groupid' => $group2->id, 'userid' => $teacher->id]);
+
+        $result = loginas_helper::get_context_user_can_login_as($manager, $teacher, $course);
+        $this->assertEquals($categorycontext, $result);
+    }
+
+    /**
+     * Tests that category-level loginas returns null when course category context is missing.
+     */
+    public function test_loginas_category_context_returns_null_when_course_category_missing(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+
+        $manager = $this->getDataGenerator()->create_user();
+        $teacher = $this->getDataGenerator()->create_user();
+        $managerroleid = $DB->get_field('role', 'id', ['shortname' => 'manager'], MUST_EXIST);
+
+        $category = $this->getDataGenerator()->create_category();
+        $course = $this->getDataGenerator()->create_course(['category' => $category->id]);
+        $categorycontext = context_coursecat::instance($category->id);
+
+        role_assign($managerroleid, $manager->id, $categorycontext->id);
+        $this->getDataGenerator()->enrol_user($teacher->id, $course->id, 'editingteacher');
+
+        $course->category = 999999999;
+
+        $result = loginas_helper::get_context_user_can_login_as($manager, $teacher, $course);
+        $this->assertNull($result);
     }
 }
