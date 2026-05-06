@@ -18,6 +18,7 @@ namespace core\session;
 
 use core\context;
 use core\context\course as context_course;
+use core\context\coursecat as context_coursecat;
 use core\context\system as context_system;
 use core\session\manager as sessionmanager;
 use stdClass;
@@ -73,7 +74,43 @@ class loginas_helper {
 
         if (!empty($course)) {
             $coursecontext = context_course::instance($course->id);
+            $categorycontext = context_coursecat::instance($course->category, IGNORE_MISSING);
+            if (empty($categorycontext)) {
+                return null;
+            }
+            // If the current user can loginas from category level, scope loginas to this category.
+            if (has_capability('moodle/user:loginas', $categorycontext, $currentuser)) {
+                if (
+                    // Reject if user is trying to login as someone with site level loginas powers.
+                    has_capability('moodle/user:loginas', $systemcontext, $loginasuser) ||
+                    // Reject if other is not enrolled.
+                    !is_enrolled($coursecontext, $loginasuser->id)
+                ) {
+                    return null;
+                }
 
+                // Check if the users are in the same group.
+                if (
+                    groups_get_course_groupmode($course) == SEPARATEGROUPS &&
+                    !has_capability('moodle/site:accessallgroups', $coursecontext, $currentuser)
+                ) {
+                    $samegroup = false;
+                    if ($groups = groups_get_all_groups($course->id, $currentuser->id)) {
+                        foreach ($groups as $group) {
+                            if (groups_is_member($group->id, $loginasuser->id)) {
+                                $samegroup = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!$samegroup) {
+                        return null;
+                    }
+                }
+
+                // Passed all checks.
+                return $categorycontext;
+            }
             if (
                 // Reject all that do not have loginas capability.
                 !has_capability('moodle/user:loginas', $coursecontext, $currentuser) ||
