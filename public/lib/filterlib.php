@@ -762,11 +762,23 @@ function filter_get_global_states() {
 /**
  * Retrieve all the filters and their states (including overridden ones in any context).
  *
- * @return array filters objects containing filter name, context, active state and sort order.
+ * @return array filters objects containing filter name, context, active state, sort order,
+ *      and joined context metadata (contextlevel and instanceid).
  */
 function filter_get_all_states(): array {
     global $DB;
-    return $DB->get_records('filter_active');
+    $sql = "SELECT fa.id,
+                   fa.filter,
+                   fa.contextid,
+                   fa.active,
+                   fa.sortorder,
+                   ctx.contextlevel,
+                   ctx.instanceid
+              FROM {filter_active} fa
+              JOIN {context} ctx ON ctx.id = fa.contextid
+          ORDER BY fa.id";
+
+    return $DB->get_records_sql($sql);
 }
 
 /**

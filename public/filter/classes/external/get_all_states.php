@@ -59,12 +59,21 @@ class get_all_states extends external_api {
         $states = filter_get_all_states();
 
         foreach ($states as $state) {
-            $context = context::instance_by_id($state->contextid);
-            $classname = \core\context_helper::parse_external_level($context->contextlevel);
+            $classname = \core\context_helper::parse_external_level($state->contextlevel);
+            if ($classname === null) {
+                // Skip rows with unrecognised context levels (e.g. orphaned or custom contexts).
+                $warnings[] = [
+                    'item' => 'filter_active',
+                    'itemid' => (int) $state->id,
+                    'warningcode' => 'invalidcontextlevel',
+                    'message' => "Filter state id {$state->id} references an unrecognised context level {$state->contextlevel}.",
+                ];
+                continue;
+            }
 
             $filterstates[] = [
                 'contextlevel' => $classname::get_short_name(),
-                'instanceid' => $context->instanceid,
+                'instanceid' => $state->instanceid,
                 'contextid' => $state->contextid,
                 'filter' => $state->filter,
                 'state' => $state->active,
