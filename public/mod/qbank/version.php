@@ -26,5 +26,5 @@
 defined('MOODLE_INTERNAL') || die();
 
 $plugin->component = 'mod_qbank';
-$plugin->version = 2025100601;
+$plugin->version = 2026051200;
 $plugin->requires = 2025092600;

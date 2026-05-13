@@ -16,9 +16,6 @@
 
 namespace mod_qbank\task;
 
-use core\context\module;
-use core\exception\moodle_exception;
-
 /**
  * Testable version of the transfer_question_categories class.
  *
@@ -28,23 +25,10 @@ use core\exception\moodle_exception;
  * @license    http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 class testable_transfer_question_categories extends transfer_question_categories {
-    /** @var int tracks the number of test transfers. */
-    private int $testcounter = 0;
-
-    /**
-     * Summary of move_question_category
-     * @param \stdClass $oldtopcategory
-     * @param module $newcontext
-     * @return void
-     */
     #[\Override]
-    protected function move_question_category(\stdClass $oldtopcategory, module $newcontext): array {
-        if ($this->testcounter >= 1) {
-            // We simulate a failure after successfully transferring two question categories
-            // and creating two corresponding transfer_questions tasks.
-            throw new moodle_exception('This is a mocked exception for testing purposes.');
-        }
-        $this->testcounter++;
-        return parent::move_question_category($oldtopcategory, $newcontext);
+    protected function create_transfer_question_category_task(int $topcategoryid): transfer_question_category {
+        $task = new testable_transfer_question_category();
+        $task->set_custom_data(['topcategoryid' => $topcategoryid]);
+        return $task;
     }
 }
