@@ -465,6 +465,9 @@ final class transfer_question_categories_test extends \advanced_testcase {
 
         $task = new transfer_question_categories();
         $task->execute();
+        $this->expectOutputRegex('~.*~s');
+        $this->runAdhocTasks(transfer_question_category::class);
+        $this->runAdhocTasks(transfer_questions::class);
 
         // Site context checks.
 
@@ -700,6 +703,9 @@ final class transfer_question_categories_test extends \advanced_testcase {
         // Run the task.
         $task = new transfer_question_categories();
         $task->execute();
+        $this->expectOutputRegex('~.*~s');
+        $this->runAdhocTasks(transfer_question_category::class);
+        $this->runAdhocTasks(transfer_questions::class);
         // An important thing to verify is that the task completes without errors,
         // for example unique key violations.
 
@@ -906,6 +912,7 @@ final class transfer_question_categories_test extends \advanced_testcase {
 
         $task = new \mod_qbank\task\transfer_question_categories();
         $task->execute();
+        $this->runAdhocTasks(transfer_question_category::class);
 
         // Assert that files are still in their original context.
         $courses = $DB->get_records('course', ['category' => $this->coursecatcontext->instanceid], 'id ASC');
@@ -1130,10 +1137,14 @@ final class transfer_question_categories_test extends \advanced_testcase {
         $this->resetAfterTest();
         $this->setup_pre_install_data();
 
+        require_once(__DIR__ . '/../fixtures/testable_transfer_question_category.php');
         require_once(__DIR__ . '/../fixtures/testable_transfer_question_categories.php');
+        testable_transfer_question_category::reset_counter();
         $task = new testable_transfer_question_categories();
+        $task->execute();
+        $this->expectOutputRegex('~.*~s');
         try {
-            $task->execute();
+            $this->runAdhocTasks(testable_transfer_question_category::class);
         } catch (moodle_exception $e) {
             // We expect a failure here, but we ignore this.
             $this->assertStringContainsString('This is a mocked exception for testing purposes.', $e->getMessage());
