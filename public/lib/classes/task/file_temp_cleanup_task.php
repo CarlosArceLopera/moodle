@@ -50,7 +50,11 @@ class file_temp_cleanup_task extends scheduled_task {
 
         $dir = new \RecursiveDirectoryIterator($tmpdir);
         // Show all child nodes prior to their parent.
-        $iter = new \RecursiveIteratorIterator($dir, \RecursiveIteratorIterator::CHILD_FIRST);
+        $iter = new \RecursiveIteratorIterator(
+            $dir,
+            \RecursiveIteratorIterator::CHILD_FIRST,
+            \RecursiveIteratorIterator::CATCH_GET_CHILD
+        );
 
         // An array of the full path (key) and date last modified.
         $modifieddateobject = array();
@@ -59,7 +63,7 @@ class file_temp_cleanup_task extends scheduled_task {
         // once a file is deleted, so we need a list of the original values.
         for ($iter->rewind(); $iter->valid(); $iter->next()) {
             $node = $iter->getRealPath();
-            if (!is_readable($node)) {
+            if ($node === false || !is_readable($node)) {
                 continue;
             }
             $modifieddateobject[$node] = $iter->getMTime();
@@ -68,7 +72,7 @@ class file_temp_cleanup_task extends scheduled_task {
         // Now loop through again and remove old files and directories.
         for ($iter->rewind(); $iter->valid(); $iter->next()) {
             $node = $iter->getRealPath();
-            if (!isset($modifieddateobject[$node]) || !is_readable($node)) {
+            if ($node === false || !isset($modifieddateobject[$node]) || !is_readable($node)) {
                 continue;
             }
 

@@ -175,4 +175,204 @@ final class file_temp_cleanup_task_test extends \basic_testcase {
 
         $this->assertEquals($expected, $actual);
     }
+
+    /**
+     * Test that CATCH_GET_CHILD prevents UnexpectedValueException when a directory vanishes mid-traversal.
+     *
+     * This deterministically simulates the race condition by deleting a
+     * directory during iterator descent via callGetChildren().
+     *
+     * Without CATCH_GET_CHILD: UnexpectedValueException is thrown and the task fails.
+     * With CATCH_GET_CHILD: the vanished subtree is skipped and traversal continues.
+     */
+    public function test_recursive_iterator_catch_get_child_skips_missing_directory_during_iteration(): void {
+        // Create the directory structure that will be removed during iteration.
+        $tmpdir = make_temp_directory('file_temp_cleanup_task_race_test');
+        $targetdir = make_temp_directory('file_temp_cleanup_task_race_test/disappearing');
+        $survivingfile = $tmpdir . DIRECTORY_SEPARATOR . 'survivor.txt';
+        touch($targetdir . DIRECTORY_SEPARATOR . 'file.txt');
+        touch($survivingfile);
+
+        // Without CATCH_GET_CHILD a removed directory throws.
+        $dir = new \RecursiveDirectoryIterator($tmpdir);
+        $iter = new class ($dir, $targetdir) extends \RecursiveIteratorIterator {
+            /** @var string Directory to remove just before descent. */
+            private string $targetdir;
+            /**
+             * Constructor.
+             *
+             * @param \RecursiveDirectoryIterator $iterator Base iterator.
+             * @param string $targetdir Directory to remove before descent.
+             */
+            public function __construct(\RecursiveDirectoryIterator $iterator, string $targetdir) {
+                // No CATCH_GET_CHILD.
+                parent::__construct($iterator, \RecursiveIteratorIterator::SELF_FIRST);
+                $this->targetdir = $targetdir;
+            }
+
+            #[\Override]
+            public function callGetChildren(): ?\RecursiveIterator {
+                $current = $this->current();
+                if ($current instanceof \SplFileInfo && $current->getRealPath() === $this->targetdir) {
+                    remove_dir($this->targetdir);
+                }
+                return parent::callGetChildren();
+            }
+        };
+
+        $threw = false;
+        try {
+            for ($iter->rewind(); $iter->valid(); $iter->next()) {
+                continue;
+            }
+        } catch (\UnexpectedValueException $e) {
+            $threw = true;
+        }
+        $this->assertTrue($threw, 'Without CATCH_GET_CHILD, a removed directory must throw UnexpectedValueException');
+
+        // Recreate the structure.
+        remove_dir($tmpdir);
+        $tmpdir = make_temp_directory('file_temp_cleanup_task_race_test');
+        $targetdir = make_temp_directory('file_temp_cleanup_task_race_test/disappearing');
+        $survivingfile = $tmpdir . DIRECTORY_SEPARATOR . 'survivor.txt';
+        touch($targetdir . DIRECTORY_SEPARATOR . 'file.txt');
+        touch($survivingfile);
+
+        // With CATCH_GET_CHILD the iterator skips the vanished subtree.
+        $dir = new \RecursiveDirectoryIterator($tmpdir);
+        $iter = new class ($dir, $targetdir) extends \RecursiveIteratorIterator {
+            /** @var string Directory to remove just before descent. */
+            private string $targetdir;
+            /**
+             * Constructor.
+             *
+             * @param \RecursiveDirectoryIterator $iterator Base iterator.
+             * @param string $targetdir Directory to remove before descent.
+             */
+            public function __construct(\RecursiveDirectoryIterator $iterator, string $targetdir) {
+                // With CATCH_GET_CHILD.
+                parent::__construct(
+                    $iterator,
+                    \RecursiveIteratorIterator::SELF_FIRST,
+                    \RecursiveIteratorIterator::CATCH_GET_CHILD,
+                );
+                $this->targetdir = $targetdir;
+            }
+
+            #[\Override]
+            public function callGetChildren(): ?\RecursiveIterator {
+                $current = $this->current();
+                if ($current instanceof \SplFileInfo && $current->getRealPath() === $this->targetdir) {
+                    remove_dir($this->targetdir);
+                }
+                return parent::callGetChildren();
+            }
+        };
+
+        $visited = [];
+        for ($iter->rewind(); $iter->valid(); $iter->next()) {
+            $path = $iter->current()->getRealPath();
+            if ($path !== false) {
+                $visited[] = $path;
+            }
+        }
+
+        // The iterator completed and still visited the surviving file.
+        $this->assertContains($survivingfile, $visited);
+        $this->assertDirectoryDoesNotExist($targetdir);
+
+        // Cleanup.
+        remove_dir($tmpdir);
+    }
+
+    /**
+     * Test that execute_on() survives a subdirectory being deleted during traversal.
+     *
+     * This is a best-effort integration test that exercises the real task code path
+     * under concurrent directory removal via pcntl_fork.
+     *
+     * NOTE: This test is non-deterministic. The race window depends on filesystem
+     * speed and scheduling. It complements the deterministic
+     * test_recursive_iterator_catch_get_child_skips_missing_directory_during_iteration
+     * which provides guaranteed regression coverage.
+     */
+    public function test_file_temp_cleanup_task_survives_concurrent_directory_removal_during_execution(): void {
+        global $CFG;
+
+        if (!function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl_fork not available.');
+        }
+
+        $root = make_temp_directory('race_test');
+        $decoy = make_temp_directory('race_test/aaaa');
+        $vanishing = make_temp_directory('race_test/vanishing');
+
+        $old = time() - ($CFG->tempdatafoldercleanup * 3600) - 3600;
+
+        for ($i = 0; $i < 500; $i++) {
+            touch("$decoy/file_$i.txt", $old);
+        }
+        touch($decoy, $old);
+        touch("$vanishing/file.txt", $old);
+        touch($vanishing, $old);
+        touch($root, $old);
+
+        // Signal file tells the child that execute_on() has started iterating.
+        $signal = "$root/.signal";
+
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            $this->markTestSkipped('pcntl_fork failed.');
+        }
+
+        if ($pid === 0) {
+            // Child process: wait for parent to start iterating, then remove the directory.
+            while (!file_exists($signal)) {
+                usleep(200);
+            }
+            // Small delay to increase the chance the parent is mid-iteration.
+            usleep(1000);
+            remove_dir($vanishing);
+            if (function_exists('posix_kill')) {
+                // Avoid running PHPUnit shutdown handlers in the child process.
+                posix_kill(getmypid(), SIGKILL);
+            }
+            exit(0);
+        }
+
+        $task = new class extends \core\task\file_temp_cleanup_task {
+            /** @var string Signal file path. */
+            public string $signal = '';
+
+            /**
+             * Expose protected execute_on(), writing signal before iteration.
+             *
+             * @param string $dir Directory to clean.
+             * @return void
+             */
+            public function run(string $dir): void {
+                touch($this->signal);
+                $this->execute_on($dir);
+            }
+        };
+        $task->signal = $signal;
+
+        $exception = null;
+        try {
+            $task->run($root);
+        } catch (\Throwable $e) {
+            $exception = $e;
+        } finally {
+            pcntl_wait($status);
+            if (is_dir($root)) {
+                remove_dir($root);
+            }
+        }
+
+        $this->assertNull(
+            $exception,
+            'execute_on() must survive concurrent directory removal. Got: ' .
+            ($exception ? $exception->getMessage() : '')
+        );
+    }
 }
