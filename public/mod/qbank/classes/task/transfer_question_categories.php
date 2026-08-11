@@ -62,94 +62,171 @@ class transfer_question_categories extends adhoc_task {
         require_once($CFG->dirroot . '/course/modlib.php');
         require_once($CFG->libdir . '/questionlib.php');
 
-        $this->fix_wrong_parents();
+        $this->log_message('tasklogmigrationstart');
+        try {
+            $this->fix_wrong_parents();
+        } catch (\Throwable $e) {
+            $this->log_message('tasklogfailedphase', [
+                'phase' => 'fix_wrong_parents',
+                'message' => $e->getMessage(),
+            ]);
+            throw $e;
+        }
+
+        $processed = 0;
+        $transferred = 0;
+        $skipped = 0;
+        $cleanedup = 0;
 
         $recordset = $DB->get_recordset('question_categories', ['parent' => 0], 'id ASC');
 
         foreach ($recordset as $oldtopcategory) {
+            $processed++;
+            $phase = 'resolve_context';
+            $oldcontext = null;
 
-            if (!$oldcontext = context::instance_by_id($oldtopcategory->contextid, IGNORE_MISSING)) {
-                // That context does not exist anymore, we will treat these as if they were at site context level.
-                $oldcontext = context_system::instance();
-            }
-
-            $trans = $DB->start_delegated_transaction();
-
-            // Remove any unused questions if they are marked as deleted.
-            // Also, if a category contained questions which were all unusable then delete it as well.
-            $subcategories = $DB->get_records_select('question_categories',
-                'parent <> 0 AND contextid = :contextid',
-                ['contextid' => $oldtopcategory->contextid]
-            );
-            // This gives us categories in parent -> child order so array_reverse it,
-            // because we should process stale categories from the bottom up.
-            $subcategories = array_reverse(sort_categories_by_tree($subcategories, $oldtopcategory->id));
-            foreach ($subcategories as $subcategory) {
-                \qbank_managecategories\helper::question_remove_stale_questions_from_category($subcategory->id);
-                if ($this->question_category_is_empty($subcategory->id)) {
-                    question_category_delete_safe($subcategory);
+            try {
+                if (!$oldcontext = context::instance_by_id($oldtopcategory->contextid, IGNORE_MISSING)) {
+                    // That context does not exist anymore, we will treat these as if they were at site context level.
+                    $oldcontext = context_system::instance();
+                    $this->log_message('tasklogmissingcontext', [
+                        'topcategoryid' => $oldtopcategory->id,
+                        'contextid' => $oldtopcategory->contextid,
+                    ]);
                 }
-            }
 
-            // If the top category no longer has any subcategories, because they only contained stale questions,
-            // delete the top category and stop here without creating a new qbank.
-            if (!$DB->record_exists('question_categories', ['parent' => $oldtopcategory->id])) {
+                $trans = $DB->start_delegated_transaction();
+
+                $phase = 'cleanup_stale_questions';
+                // Remove any unused questions if they are marked as deleted.
+                // Also, if a category contained questions which were all unusable then delete it as well.
+                $subcategories = $DB->get_records_select(
+                    'question_categories',
+                    'parent <> 0 AND contextid = :contextid',
+                    ['contextid' => $oldtopcategory->contextid]
+                );
+                // This gives us categories in parent -> child order so array_reverse it,
+                // because we should process stale categories from the bottom up.
+                $subcategories = array_reverse(sort_categories_by_tree($subcategories, $oldtopcategory->id));
+                foreach ($subcategories as $subcategory) {
+                    \qbank_managecategories\helper::question_remove_stale_questions_from_category($subcategory->id);
+                    if ($this->question_category_is_empty($subcategory->id)) {
+                        question_category_delete_safe($subcategory);
+                    }
+                }
+
+                $phase = 'check_remaining_subcategories';
+                // If the top category no longer has any subcategories, because they only contained stale questions,
+                // delete the top category and stop here without creating a new qbank.
+                if (!$DB->record_exists('question_categories', ['parent' => $oldtopcategory->id])) {
+                    $DB->delete_records('question_categories', ['id' => $oldtopcategory->id]);
+                    $trans->allow_commit();
+                    $cleanedup++;
+                    continue;
+                }
+
+                $phase = 'check_module_context';
+                // We don't want to transfer any categories at valid contexts i.e. quiz modules.
+                if ($oldcontext->contextlevel === CONTEXT_MODULE) {
+                    $trans->allow_commit();
+                    $skipped++;
+                    $this->log_message('tasklogskipmodulecontext', [
+                        'topcategoryid' => $oldtopcategory->id,
+                        'contextid' => $oldcontext->id,
+                    ]);
+                    continue;
+                }
+
+                $phase = 'resolve_destination';
+                // Category is in use so let's process it. Firstly, a course and mod instance is needed.
+                switch ($oldcontext->contextlevel) {
+                    case CONTEXT_SYSTEM:
+                        $course = get_site();
+                        $bankname = question_bank_helper::get_bank_name_string('systembank', 'question');
+                        break;
+                    case CONTEXT_COURSECAT:
+                        $coursecategory = core_course_category::get($oldcontext->instanceid);
+                        $courseshortname = "$coursecategory->name-$coursecategory->id";
+                        $course = $this->create_course($coursecategory, $courseshortname);
+                        $bankname = question_bank_helper::get_bank_name_string('sharedbank', 'mod_qbank', $coursecategory->name);
+                        break;
+                    case CONTEXT_COURSE:
+                        $course = get_course($oldcontext->instanceid);
+                        $bankname = question_bank_helper::get_bank_name_string('sharedbank', 'mod_qbank', $course->shortname);
+                        break;
+                    default:
+                        // This shouldn't be possible, so we can't really transfer it.
+                        // We should commit any pre-transfer category cleanup though.
+                        $trans->allow_commit();
+                        $skipped++;
+                        $this->log_message('tasklogskipunsupportedcontext', [
+                            'topcategoryid' => $oldtopcategory->id,
+                            'contextlevel' => $oldcontext->contextlevel,
+                        ]);
+                        continue 2;
+                }
+
+                $phase = 'get_or_create_qbank';
+                if (!$newmod = question_bank_helper::get_default_open_instance_system_type($course)) {
+                    $newmod = question_bank_helper::create_default_open_instance(
+                        $course,
+                        $bankname,
+                        question_bank_helper::TYPE_SYSTEM
+                    );
+                }
+
+                $phase = 'move_categories';
+                // We have our new mod instance, now move all the subcategories of the old 'top' category to this new context.
+                $movedcategories = $this->move_question_category($oldtopcategory, $newmod->context);
+
+                $phase = 'queue_question_tasks';
+                // Create a set of new tasks to update the questions in each category to the new contexts.
+                // The category itself is already in the new context. We record the old context
+                // so we know where to move files and tags from.
+                foreach ($movedcategories as $categoryid) {
+                    $task = new transfer_questions();
+                    $task->set_custom_data(['categoryid' => $categoryid, 'contextid' => $oldtopcategory->contextid]);
+                    manager::queue_adhoc_task($task);
+                }
+
+                $phase = 'delete_old_top_category';
+                // Job done, lets delete the old 'top' category.
                 $DB->delete_records('question_categories', ['id' => $oldtopcategory->id]);
                 $trans->allow_commit();
-                continue;
+
+                $transferred++;
+            } catch (\Throwable $e) {
+                $contextlevel = $oldcontext ? $oldcontext->contextlevel : 'unknown';
+                $this->log_message('tasklogfailedcategory', [
+                    'topcategoryid' => $oldtopcategory->id,
+                    'contextid' => $oldtopcategory->contextid,
+                    'contextlevel' => $contextlevel,
+                    'phase' => $phase,
+                    'message' => $e->getMessage(),
+                ]);
+                throw $e;
             }
-
-            // We don't want to transfer any categories at valid contexts i.e. quiz modules.
-            if ($oldcontext->contextlevel === CONTEXT_MODULE) {
-                $trans->allow_commit();
-                continue;
-            }
-
-            // Category is in use so let's process it. Firstly, a course and mod instance is needed.
-            switch ($oldcontext->contextlevel) {
-                case CONTEXT_SYSTEM:
-                    $course = get_site();
-                    $bankname = question_bank_helper::get_bank_name_string('systembank', 'question');
-                    break;
-                case CONTEXT_COURSECAT:
-                    $coursecategory = core_course_category::get($oldcontext->instanceid);
-                    $courseshortname = "$coursecategory->name-$coursecategory->id";
-                    $course = $this->create_course($coursecategory, $courseshortname);
-                    $bankname = question_bank_helper::get_bank_name_string('sharedbank', 'mod_qbank', $coursecategory->name);
-                    break;
-                case CONTEXT_COURSE:
-                    $course = get_course($oldcontext->instanceid);
-                    $bankname = question_bank_helper::get_bank_name_string('sharedbank', 'mod_qbank', $course->shortname);
-                    break;
-                default:
-                    // This shouldn't be possible, so we can't really transfer it.
-                    // We should commit any pre-transfer category cleanup though.
-                    $trans->allow_commit();
-                    continue 2;
-            }
-
-            if (!$newmod = question_bank_helper::get_default_open_instance_system_type($course)) {
-                $newmod = question_bank_helper::create_default_open_instance($course, $bankname, question_bank_helper::TYPE_SYSTEM);
-            }
-
-            // We have our new mod instance, now move all the subcategories of the old 'top' category to this new context.
-            $movedcategories = $this->move_question_category($oldtopcategory, $newmod->context);
-
-            // Create a set of new tasks to update the questions in each category to the new contexts.
-            // The category itself is already in the new context. We record the old context
-            // so we know where to move files and tags from.
-            foreach ($movedcategories as $categoryid) {
-                $task = new transfer_questions();
-                $task->set_custom_data(['categoryid' => $categoryid, 'contextid' => $oldtopcategory->contextid]);
-                manager::queue_adhoc_task($task);
-            }
-
-            // Job done, lets delete the old 'top' category.
-            $DB->delete_records('question_categories', ['id' => $oldtopcategory->id]);
-            $trans->allow_commit();
         }
 
         $recordset->close();
+
+        $this->log_message('tasklogmigrationfinished', [
+            'processed' => $processed,
+            'transferred' => $transferred,
+            'skipped' => $skipped,
+            'cleanedup' => $cleanedup,
+        ]);
+    }
+
+    /**
+     * Output a consistent migration log message.
+     *
+     * @param string $identifier
+     * @param mixed $a
+     * @return void
+     */
+    protected function log_message(string $identifier, mixed $a = null): void {
+        mtrace('[mod_qbank] ' . get_string($identifier, 'mod_qbank', $a));
     }
 
     /**
