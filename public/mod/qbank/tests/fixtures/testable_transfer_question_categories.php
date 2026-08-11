@@ -47,3 +47,11 @@ class testable_transfer_question_categories extends transfer_question_categories
         return parent::move_question_category($oldtopcategory, $newcontext);
     }
 }
+
+class testable_transfer_question_categories_failing_fix_parents extends transfer_question_categories {
+    #[\Override]
+    public function fix_wrong_parents(): void {
+        // Simulate a failure before any top-level category is processed.
+        throw new moodle_exception('This is a mocked exception for testing purposes.');
+    }
+}
