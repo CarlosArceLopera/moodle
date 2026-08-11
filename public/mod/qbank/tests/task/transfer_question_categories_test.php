@@ -465,6 +465,7 @@ final class transfer_question_categories_test extends \advanced_testcase {
         $this->resetAfterTest();
         $this->setup_pre_install_data();
 
+        $this->expectOutputRegex('~.*~s');
         $task = new transfer_question_categories();
         $task->execute();
 
@@ -700,6 +701,7 @@ final class transfer_question_categories_test extends \advanced_testcase {
         \core\context_helper::reset_caches();
 
         // Run the task.
+        $this->expectOutputRegex('~.*~s');
         $task = new transfer_question_categories();
         $task->execute();
         // An important thing to verify is that the task completes without errors,
@@ -1140,6 +1142,7 @@ final class transfer_question_categories_test extends \advanced_testcase {
         sort($expectedcategoryids);
 
         require_once(__DIR__ . '/../fixtures/testable_transfer_question_categories.php');
+        $this->expectOutputRegex('~.*~s');
         $task = new testable_transfer_question_categories();
         try {
             $task->execute();
