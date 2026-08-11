@@ -465,8 +465,42 @@ final class transfer_question_categories_test extends \advanced_testcase {
         $this->resetAfterTest();
         $this->setup_pre_install_data();
 
+        // Capture the real ids/contexts involved so the log assertions below check actual data, not just "some output".
+        $expectedprocessed = $DB->count_records('question_categories', ['parent' => 0]);
+        $quiztopcategory = $DB->get_record(
+            'question_categories',
+            ['contextid' => $this->quizcontext->id, 'parent' => 0],
+            '*',
+            MUST_EXIST
+        );
+
+        ob_start();
         $task = new transfer_question_categories();
         $task->execute();
+        $output = ob_get_clean();
+
+        $this->assertStringContainsString(get_string('tasklogmigrationstart', 'mod_qbank'), $output);
+
+        // The category already in a module context must be logged as skipped, with its real id and context.
+        $this->assertStringContainsString(get_string('tasklogskipmodulecontext', 'mod_qbank', [
+            'topcategoryid' => $quiztopcategory->id,
+            'contextid' => $this->quizcontext->id,
+        ]), $output);
+
+        // The final summary must reflect what actually happened: the explicit quiz mod category is skipped, the
+        // fixture's 4 real top categories (site, course category, course, used-unused) are transferred, and the
+        // remaining empty module-context categories auto-created alongside each quiz are cleaned up.
+        $this->assertStringContainsString(get_string('tasklogmigrationfinished', 'mod_qbank', [
+            'processed' => $expectedprocessed,
+            'transferred' => 4,
+            'skipped' => 1,
+            'cleanedup' => $expectedprocessed - 5,
+        ]), $output);
+
+        // Success cases (processing/transfer/cleanup of individual categories) must not be logged one line at a time.
+        $this->assertStringNotContainsString('Processing top category', $output);
+        $this->assertStringNotContainsString('Transferred top category', $output);
+        $this->assertStringNotContainsString('Deleted top category', $output);
 
         // Site context checks.
 
@@ -696,14 +730,40 @@ final class transfer_question_categories_test extends \advanced_testcase {
         quiz_add_quiz_question($question1->id, $quiz);
         quiz_add_quiz_question($question2->id, $quiz);
 
+        // Capture the real top-category ids before they are processed, so the log assertions below check actual data.
+        $topcat1 = $DB->get_record('question_categories', ['contextid' => $context1->id, 'parent' => 0], '*', MUST_EXIST);
+        $topcat2 = $DB->get_record('question_categories', ['contextid' => $context2->id, 'parent' => 0], '*', MUST_EXIST);
+        $expectedprocessed = $DB->count_records('question_categories', ['parent' => 0]);
+
         // Make sure the caches are reset so that the contexts are not cached.
         \core\context_helper::reset_caches();
 
         // Run the task.
+        ob_start();
         $task = new transfer_question_categories();
         $task->execute();
+        $output = ob_get_clean();
         // An important thing to verify is that the task completes without errors,
         // for example unique key violations.
+
+        // Both categories pointing to now-missing contexts must be logged with their real ids and (now-deleted) contextids.
+        $this->assertStringContainsString(get_string('tasklogmissingcontext', 'mod_qbank', [
+            'topcategoryid' => $topcat1->id,
+            'contextid' => $context1->id,
+        ]), $output);
+        $this->assertStringContainsString(get_string('tasklogmissingcontext', 'mod_qbank', [
+            'topcategoryid' => $topcat2->id,
+            'contextid' => $context2->id,
+        ]), $output);
+
+        // Both orphaned categories should end up transferred into the (newly created) system-level shared question bank.
+        // The test quiz also gets its own empty module-context top category, which gets cleaned up along the way.
+        $this->assertStringContainsString(get_string('tasklogmigrationfinished', 'mod_qbank', [
+            'processed' => $expectedprocessed,
+            'transferred' => 2,
+            'skipped' => 0,
+            'cleanedup' => $expectedprocessed - 2,
+        ]), $output);
 
         // Verify - there should be a single question bank in the site course with the expected name.
         $sitemodinfo = get_fast_modinfo(get_site());
@@ -1139,14 +1199,37 @@ final class transfer_question_categories_test extends \advanced_testcase {
         ];
         sort($expectedcategoryids);
 
+        // The 2nd top category processed (course category context) is the one the fixture makes fail.
+        $failingtopcategory = $DB->get_record(
+            'question_categories',
+            ['contextid' => $this->coursecatcontext->id, 'parent' => 0],
+            '*',
+            MUST_EXIST
+        );
+
         require_once(__DIR__ . '/../fixtures/testable_transfer_question_categories.php');
+        $actualerrormessage = null;
+        ob_start();
         $task = new testable_transfer_question_categories();
         try {
             $task->execute();
         } catch (moodle_exception $e) {
             // We expect a failure here, but we ignore this.
             $this->assertStringContainsString('This is a mocked exception for testing purposes.', $e->getMessage());
+            $actualerrormessage = $e->getMessage();
         }
+        $output = ob_get_clean();
+        $this->assertNotNull($actualerrormessage);
+
+        // The failure must be logged with the real top-category id, its context/level, the phase, and the error message.
+        $this->assertStringContainsString(get_string('tasklogfailedcategory', 'mod_qbank', [
+            'topcategoryid' => $failingtopcategory->id,
+            'contextid' => $this->coursecatcontext->id,
+            'contextlevel' => CONTEXT_COURSECAT,
+            'phase' => 'move_categories',
+            'message' => $actualerrormessage,
+        ]), $output);
+
         // We want to verify a failure does not prevent the creation of tasks with hitherto transferred categories and their data.
         $questiontasks = manager::get_adhoc_tasks(transfer_questions::class);
         $this->assertCount(count($expectedcategoryids), $questiontasks);
@@ -1162,5 +1245,39 @@ final class transfer_question_categories_test extends \advanced_testcase {
         foreach ($questiontasks as $questiontask) {
             $this->assertEquals($sitecontext->id, $questiontask->get_custom_data()->contextid);
         }
+    }
+
+    /**
+     * Assert a failure in fix_wrong_parents(), before any category is processed, is still logged with useful information.
+     *
+     * @return void
+     */
+    public function test_qbank_install_resilience_fix_wrong_parents_failure(): void {
+        $this->resetAfterTest();
+        $this->setup_pre_install_data();
+
+        require_once(__DIR__ . '/../fixtures/testable_transfer_question_categories_failing_fix_parents.php');
+        $actualerrormessage = null;
+        ob_start();
+        $task = new testable_transfer_question_categories_failing_fix_parents();
+        try {
+            $task->execute();
+        } catch (moodle_exception $e) {
+            // We expect a failure here, but we ignore this.
+            $this->assertStringContainsString('This is a mocked exception for testing purposes.', $e->getMessage());
+            $actualerrormessage = $e->getMessage();
+        }
+        $output = ob_get_clean();
+        $this->assertNotNull($actualerrormessage);
+
+        // The failure must be logged with the phase and the error message, even though it happened before the main loop.
+        $this->assertStringContainsString(get_string('tasklogfailedphase', 'mod_qbank', [
+            'phase' => 'fix_wrong_parents',
+            'message' => $actualerrormessage,
+        ]), $output);
+
+        // No categories should have been queued for the transfer_questions task, since we never reached the main loop.
+        $questiontasks = manager::get_adhoc_tasks(transfer_questions::class);
+        $this->assertCount(0, $questiontasks);
     }
 }
